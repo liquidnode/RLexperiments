@@ -3,14 +3,14 @@ This project contains various reinforcement/imitation learning experiments, such
 
 
 This repository contains modified and unmodified code from:
--https://github.com/facebookresearch/XLM (lightly modified HashingMemory module)
--https://github.com/minerllabs/minerl (modified data pipeline)
--https://github.com/minerllabs/baselines (modified and new wrappers)
--https://github.com/LiyuanLucasLiu/RAdam
--https://github.com/pytorch/pytorch (modified MixtureSameFamily)
--https://github.com/dannysdeng/dqn-pytorch (modified IQN)
--https://github.com/zxkyjimmy/Lookahead
--https://github.com/kazizzad/GATS (for spectral norm)
--https://github.com/christiancosgrove/pytorch-spectral-normalization-gan (for spectral norm)
--https://github.com/rlcode/per (for the SumTree class)
--https://github.com/vub-ai-lab/bdpi (Learner, Actor, Critic and LearnerModel class structure are used as templates)
+- https://github.com/facebookresearch/XLM (lightly modified HashingMemory module)
+- https://github.com/minerllabs/minerl (modified data pipeline)
+- https://github.com/minerllabs/baselines (modified and new wrappers)
+- https://github.com/LiyuanLucasLiu/RAdam
+- https://github.com/pytorch/pytorch (modified MixtureSameFamily)
+- https://github.com/dannysdeng/dqn-pytorch (modified IQN)
+- https://github.com/zxkyjimmy/Lookahead
+- https://github.com/kazizzad/GATS (for spectral norm)
+- https://github.com/christiancosgrove/pytorch-spectral-normalization-gan (for spectral norm)
+- https://github.com/rlcode/per (for the SumTree class)
+- https://github.com/vub-ai-lab/bdpi (Learner, Actor, Critic and LearnerModel class structure are used as templates)
