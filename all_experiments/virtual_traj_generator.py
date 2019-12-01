@@ -26,8 +26,11 @@ from scipy.misc import imsave
 import subprocess
 
 # Import additional environments if available
-import gym_envs
-import gym_envs.contwrapper
+try:
+    import gym_envs
+    import gym_envs.contwrapper
+except:
+    pass
 
 try:
     import gym_miniworld
