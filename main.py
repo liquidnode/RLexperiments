@@ -6,6 +6,11 @@ from actor_traj_generator import ActorTrajGenerator
 from replaybuffers import ReplayBuffer, ReplayBufferPER
 from trainer import Trainer
 import time
+import copy
+
+DEBUG_ACTOR_REPLAY_BUFFER = True
+DEBUG_EXPERT_REPLAY_BUFFER = False
+DEBUG_TRAINER = False
 
 def main():
     parser = argparse.ArgumentParser(description="RLexperiments")
@@ -117,7 +122,9 @@ def main():
                                        time_deltas, 
                                        args.min_num_future_rewards+end, 
                                        pov_time_deltas=pov_time_deltas, 
-                                       blocking=True)
+                                       blocking=True,
+                                       no_process=DEBUG_ACTOR_REPLAY_BUFFER)
+        args = copy.deepcopy(args)
         args.sample_efficiency = 1
         replay_expert = ReplayBufferPER(args, 
                                         actor_traj.data_description(), 
@@ -126,7 +133,8 @@ def main():
                                         time_deltas, 
                                         args.min_num_future_rewards+end, 
                                         pov_time_deltas=pov_time_deltas, 
-                                        blocking=True)
+                                        blocking=True,
+                                        no_process=DEBUG_EXPERT_REPLAY_BUFFER)
     else:
         #use uniform sampling replay buffer workers
         prio_queues = None
@@ -136,7 +144,9 @@ def main():
                                     time_deltas, 
                                     args.min_num_future_rewards+end, 
                                     pov_time_deltas=pov_time_deltas, 
-                                    blocking=True)
+                                    blocking=True,
+                                    no_process=DEBUG_ACTOR_REPLAY_BUFFER)
+        args = copy.deepcopy(args)
         args.sample_efficiency = 1
         replay_expert = ReplayBuffer(args, 
                                      actor_traj.data_description(), 
@@ -144,7 +154,8 @@ def main():
                                      time_deltas, 
                                      args.min_num_future_rewards+end, 
                                      pov_time_deltas=pov_time_deltas, 
-                                     blocking=True)
+                                     blocking=True,
+                                     no_process=DEBUG_EXPERT_REPLAY_BUFFER)
     #create the trainer process
     trainer = Trainer(args.agent_name, 
                       args.agent_from, 
@@ -155,10 +166,20 @@ def main():
                       add_args=[time_deltas], 
                       prio_queues=prio_queues, 
                       copy_queues=copy_queues, 
-                      blocking=False)
+                      blocking=False,
+                      no_process=DEBUG_TRAINER)
 
-    while True:
-        time.sleep(1)
+    if not DEBUG_ACTOR_REPLAY_BUFFER \
+        and not DEBUG_EXPERT_REPLAY_BUFFER \
+        and not DEBUG_TRAINER:
+        while True:
+            time.sleep(1)
+    elif DEBUG_ACTOR_REPLAY_BUFFER:
+        replay_actor.p()
+    elif DEBUG_EXPERT_REPLAY_BUFFER:
+        replay_expert.p()
+    elif DEBUG_TRAINER:
+        trainer.p()
 
     
 if __name__ == '__main__':

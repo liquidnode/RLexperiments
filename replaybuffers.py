@@ -14,7 +14,7 @@ torch.multiprocessing.set_sharing_strategy('file_system')
 #it takes streams of trajectories, stores them and produces batch datastreams for training
 #it also support on-the-fly compression using the zarr package
 class ReplayBuffer():
-    def __init__(self, args, data_description, input_queue, time_deltas, max_range=0, blocking=True, pov_time_deltas=None):
+    def __init__(self, args, data_description, input_queue, time_deltas, max_range=0, blocking=True, pov_time_deltas=None, no_process=False):
         num_workers = args.num_replay_workers
         if not blocking:
             num_workers = 1
@@ -27,10 +27,14 @@ class ReplayBuffer():
         params = [(args, i, data_description, input_queue[i], self.batch_queues[i], time_deltas, max_range, blocking, pov_time_deltas) 
                   for i in range(num_workers)]
 
-        #start processes
-        self.proc_pool = [Process(target=ReplayBuffer.worker, args=params[i]) for i in range(num_workers)]
-        for p in self.proc_pool:
-            p.start()
+        if not no_process:
+            #start processes
+            self.proc_pool = [Process(target=ReplayBuffer.worker, args=params[i]) for i in range(num_workers)]
+            for p in self.proc_pool:
+                p.start()
+        else:
+            assert num_workers == 1
+            self.p = lambda: ReplayBuffer.worker(*params[0])
 
 
 
@@ -166,7 +170,7 @@ class ReplayBuffer():
 #replay buffer with prioritization
 #it needs an additional stream of priority updates from the trainer process
 class ReplayBufferPER():
-    def __init__(self, args, data_description, input_queue, prio_queues, time_deltas, max_range=0, blocking=True, pov_time_deltas=None):
+    def __init__(self, args, data_description, input_queue, prio_queues, time_deltas, max_range=0, blocking=True, pov_time_deltas=None, no_process=False):
         num_workers = args.num_replay_workers
         if not blocking:
             num_workers = 1
@@ -179,10 +183,14 @@ class ReplayBufferPER():
         params = [(args, i, data_description, input_queue[i], self.batch_queues[i], prio_queues[i], time_deltas, max_range, blocking, pov_time_deltas) 
                   for i in range(num_workers)]
 
-        #start processes
-        self.proc_pool = [Process(target=ReplayBufferPER.worker, args=params[i]) for i in range(num_workers)]
-        for p in self.proc_pool:
-            p.start()
+        if not no_process:
+            #start processes
+            self.proc_pool = [Process(target=ReplayBufferPER.worker, args=params[i]) for i in range(num_workers)]
+            for p in self.proc_pool:
+                p.start()
+        else:
+            assert num_workers == 1
+            self.p = lambda: ReplayBufferPER.worker(*params[0])
 
 
 
@@ -331,7 +339,6 @@ class ReplayBufferPER():
                                 idxs.append(idx)
                                 tree_idxs.append(tidx)
                                 priorities.append(-123456)
-                        sum_tree_lock.release()
 
                         mean = np.mean(rpriorities)
                         priorities = np.where(np.array(priorities)<-123455,mean,priorities)
@@ -342,6 +349,7 @@ class ReplayBufferPER():
                             print(sampling_probabilities.min())
                             print(sampling_probabilities.max())
                             print(beta)
+                        sum_tree_lock.release()
                         is_weight /= is_weight.max()
                         
                         beta = min(1.0, beta + beta_increment_per_sampling * len(idxs))

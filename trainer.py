@@ -11,10 +11,13 @@ import time
 #the trainer process reads a stream of batched data and trains an agent
 #it also produces update data for proesses that depend on an up-to-date agent (like ActorTrajGenerator) 
 class Trainer():
-    def __init__(self, agent_name, agent_from, state_shape, num_actions, args, input_queues, copy_queues=None, add_args=None, blocking=True, prio_queues=None):
+    def __init__(self, agent_name, agent_from, state_shape, num_actions, args, input_queues, copy_queues=None, add_args=None, blocking=True, prio_queues=None, no_process=False):
         self.copy_queues = copy_queues
-        self.p = Process(target=Trainer.train_worker, args=(agent_name, agent_from, state_shape, num_actions, args, input_queues, self.copy_queues, add_args, blocking, prio_queues))
-        self.p.start()
+        if not no_process:
+            self.p = Process(target=Trainer.train_worker, args=(agent_name, agent_from, state_shape, num_actions, args, input_queues, self.copy_queues, add_args, blocking, prio_queues))
+            self.p.start()
+        else:
+            self.p = lambda: Trainer.train_worker(agent_name, agent_from, state_shape, num_actions, args, input_queues, self.copy_queues, add_args, blocking, prio_queues)
 
 
     @staticmethod
