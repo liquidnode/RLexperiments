@@ -99,7 +99,7 @@ class VisualNet(torch.nn.Module):
             tencnn_layers.append(torch.nn.Linear(in_channels*(end_size**2), self.cont_dim*2+sum(self.disc_dims)))
         else:
             tencnn_layers.append(torch.nn.Linear(in_channels*(end_size**2), self.embed_dim))
-            #tencnn_layers.append(torch.nn.Tanh())
+            tencnn_layers.append(Lambda(lambda x: swish(x)))
         encnn_layers.append(torch.nn.Sequential(*tencnn_layers))
         self.encnn_layers = torch.nn.ModuleList(encnn_layers)
         self.log_softmax = torch.nn.LogSoftmax(-1)
@@ -258,10 +258,18 @@ class MultiStep():
         self.continuous_embed_dim = self.args.hidden-self.total_disc_embed_dim
 
         self.running_Q_diff = None
-        self.num_policy_samples = 16
+        self.num_policy_samples = 32
 
         self.only_visnet = only_visnet
         self._model = self._make_model()
+        self._target = None
+        
+    def build_target(self):
+        self._target = self._make_model()
+        self._last_target = self._make_model()
+        self._target_interpolation = 0.0
+        self._interpolation_speed = 50.0
+        self._stage = 0
 
     
     def load_state_dict(self, s, strict=True):
@@ -287,6 +295,10 @@ class MultiStep():
             self.load_state_dict(state_dict)
             if 'Lambda' in self._model:
                 self._model['Lambda'] = torch.load(filename + 'multistepLam')
+            if self._target is not None:
+                self._stage = 2
+                self._target['modules'].load_state_dict(state_dict)
+                self._last_target['modules'].load_state_dict(state_dict)
         else:
             torch.save(self._model['modules'].state_dict(), filename + 'multistep')
             torch.save(self.train_iter, filename + 'train_iter')
@@ -346,13 +358,12 @@ class MultiStep():
                                                          Lambda(lambda x: swish(x)),
                                                          torch.nn.Linear(self.args.hidden, (self.action_dim-2)*self.max_predict_range+4*self.max_predict_range+2*self.max_predict_range))#discrete probs + mu/var of continuous actions + zero cont. probs
 
-        self.num_horizon = 16
-        modules['Q_values'] = torch.nn.Sequential(torch.nn.Linear(self.complete_state + (self.action_dim + 2) * self.max_predict_range, self.args.hidden),
+        modules['Q_values'] = torch.nn.Sequential(torch.nn.Linear(self.complete_state + (self.action_dim + 2) * self.max_predict_range, self.args.hidden*2),
                                                   Lambda(lambda x: swish(x)),
-                                                  torch.nn.Linear(self.args.hidden, self.args.hidden),
+                                                  torch.nn.Linear(self.args.hidden*2, self.args.hidden),
                                                   Lambda(lambda x: swish(x)),
-                                                  HashingMemory.build(self.args.hidden, self.num_horizon, self.args))
-                                                  #torch.nn.Linear(self.args.hidden, self.num_horizon))
+                                                  #HashingMemory.build(self.args.hidden, 1, self.args))
+                                                  torch.nn.Linear(self.args.hidden, 1))
 
         self.revidx = [i for i in range(self.args.num_past_times-1, -1, -1)]
         self.revidx = torch.tensor(self.revidx).long()
@@ -385,7 +396,7 @@ class MultiStep():
 
         self.gammas = GAMMA ** torch.arange(0, self.max_predict_range, device=self.device).float()#.unsqueeze(0).expand(self.args.er, -1)
 
-        optimizer = RAdam(model_params, self.args.lr, weight_decay=1e-5)
+        optimizer = RAdam(model_params, self.args.lr, weight_decay=1e-6)
 
         model = {'modules': modules, 
                  'opt': optimizer, 
@@ -405,6 +416,23 @@ class MultiStep():
 
     def map_camera(self, x):
         return x * 180.0
+
+    def get_complete_embed(self, model, pov_state, state, past_embeds=None):
+        #get pov embed
+        pov_embed = model['modules']['pov_embed'](pov_state)
+        embed = [pov_embed]
+
+        if self.MEMORY_MODEL:
+            #make memory embed
+            memory_embed = model['modules']['memory'](past_embeds, pov_embed)
+            embed.append(memory_embed)
+
+        #combine all embeds
+        for o in self.state_shape:
+            if o in self.state_keys and o != 'pov':
+                embed.append(state[o])
+        embed = torch.cat(embed, dim=-1)
+        return embed
 
     def pretrain(self, input, worker_num=None):
         assert False #not implemented
@@ -434,6 +462,8 @@ class MultiStep():
         is_weight = None
         if 'is_weight' in input:
             is_weight = torch.cat([variable(input['is_weight']),variable(expert_input['is_weight'])],dim=0)
+        else:
+            is_weight = torch.ones((reward.shape[0],), device=self.device).float()
         states['pov'] = (states['pov'].float()/255.0)*2.0 - 1.0
         states['pov'] = states['pov'].permute(0, 1, 4, 2, 3)
         current_state = {}
@@ -470,35 +500,19 @@ class MultiStep():
                 past_done = torch.cumsum(past_done,1).clamp(max=1).bool()
                 past_done = past_done[:,self.revidx].unsqueeze(-1).expand(-1,-1,past_embeds.shape[-1])
                 next_past_embeds.masked_fill_(past_done, 0.0)
+        else:
+            past_embeds = None
+            next_past_embeds = None
 
                 
-        #get pov embed
-        current_pov_embed = self._model['modules']['pov_embed'](states['pov'][:,0])
+        #get complete embeds of input
+        tembed = self.get_complete_embed(self._model, states['pov'][:,0], current_state, past_embeds)
+        nembed = self.get_complete_embed(self._model, states['pov'][:,1], next_state, next_past_embeds)
         with torch.no_grad():
-            next_pov_embed = self._model['modules']['pov_embed'](states['pov'][:,1])
-
-        tembed = [current_pov_embed]
-        nembed = [next_pov_embed]
-            
-        if self.MEMORY_MODEL:
-            #make memory embed
-            current_memory_embed = self._model['modules']['memory'](past_embeds, current_pov_embed)
-            with torch.no_grad():
-                next_memory_embed = self._target['memory'](next_past_embeds, next_pov_embed)
-            tembed.append(current_memory_embed)
-            nembed.append(next_memory_embed)
-
-        #combine all embeds
-        for o in self.state_shape:
-            if o in self.state_keys and o != 'pov':
-                tembed.append(current_state[o])
-        tembed = torch.cat(tembed, dim=-1)
-        for o in self.state_shape:
-            if o in self.state_keys and o != 'pov':
-                nembed.append(next_state[o])
-        nembed = torch.cat(nembed, dim=-1)
+            nembed_target = self.get_complete_embed(self._target, states['pov'][:,1], next_state, next_past_embeds)
+            nembed_last_target = self.get_complete_embed(self._last_target, states['pov'][:,1], next_state, next_past_embeds)
         
-        #encode actions
+        #encode actual actions
         current_actions_cat = []
         for a in self.action_dict:
             if a != 'camera':
@@ -510,13 +524,14 @@ class MultiStep():
                 current_actions_cat.append(current_zero)
         current_actions_cat = torch.cat(current_actions_cat, dim=1)
 
-        #get best (next) action
         actions_logits = self._model['modules']['actions_predict'](nembed).view(-1, self.max_predict_range, self.action_dim + 4)
         dis_logits, zero_logits, camera_mu, camera_log_var = actions_logits[:,:,:(self.action_dim-2)], actions_logits[:,:,(self.action_dim-2):self.action_dim], actions_logits[:,:,self.action_dim:(self.action_dim+2)], actions_logits[:,:,(self.action_dim+2):]
         camera_mu *= 0.1
         camera_log_var = 5.0 - torch.nn.Softplus()(5.0 - torch.nn.Softplus()(camera_log_var + 5.0) + 5.0)
         camera_log_var -= 5.0
         dis_logits = torch.split(dis_logits, self.action_split, -1)
+
+        #get best (next) action
         next_Qs = None
         mean_Q = None
         loss = None
@@ -541,20 +556,29 @@ class MultiStep():
                     actions_cat.append(1.0 - zero_camera.float())
                     actions_cat.append(zero_camera.float())
             actions_cat = torch.cat(actions_cat, dim=1)
-            with torch.no_grad():
-                c_next_Qs = self._model['modules']['Q_values'](torch.cat([nembed, actions_cat], dim=1))
             all_actions.append(c_actions)
-            all_Qs.append(c_next_Qs.clone())
-            if next_Qs is None:
-                next_Qs = c_next_Qs
-                #best_actions = c_actions
-                mean_Q = c_next_Qs[:,self.num_horizon-1]
+            if self._stage != 0:
+                with torch.no_grad():
+                    if self._stage == 0:
+                        c_next_Qs = torch.zeros((reward.shape[0], 1), device = self.device).float()
+                    elif self._stage == 1:
+                        c_next_Qs = self._target['modules']['Q_values'](torch.cat([nembed_target, actions_cat], dim=1)) * self._target_interpolation
+                    elif self._stage == 2:
+                        c_next_Qs = self._target['modules']['Q_values'](torch.cat([nembed_target, actions_cat], dim=1)) * self._target_interpolation +\
+                            self._last_target['modules']['Q_values'](torch.cat([nembed_last_target, actions_cat], dim=1)) * (1.0 - self._target_interpolation)
+                all_Qs.append(c_next_Qs.clone())
+                if next_Qs is None:
+                    next_Qs = c_next_Qs
+                    #best_actions = c_actions
+                    mean_Q = c_next_Qs[:,0]
+                else:
+                    #Q_mask = (next_Qs[:,0] < c_next_Qs[:,0]).view(-1, 1, 1)
+                    #for a in best_actions:
+                    #    best_actions[a] = torch.where(Q_mask.expand(-1, c_actions[a].shape[1], c_actions[a].shape[2]), c_actions[a], best_actions[a])
+                    next_Qs = torch.max(next_Qs, c_next_Qs)
+                    mean_Q += c_next_Qs[:,0]
             else:
-                #Q_mask = (next_Qs[:,self.num_horizon-1] < c_next_Qs[:,self.num_horizon-1]).view(-1, 1)
-                #for a in best_actions:
-                #    best_actions[a] = np.where(Q_mask.expand(-1, c_actions[a].shape[1]), c_actions[a], best_actions[a])
-                next_Qs = torch.max(next_Qs, c_next_Qs)
-                mean_Q += c_next_Qs[:,self.num_horizon-1]
+                next_Qs = torch.zeros((reward.shape[0], 1), device = self.device).float()
 
         if self.train_iter % 1 == 0:
             #add bc loss
@@ -564,56 +588,61 @@ class MultiStep():
             for a in self.action_dict:
                 if a != 'camera':
                     if bc_loss is None:
-                        bc_loss = self._model['ce_loss'](dis_logits[ii][batch_size:].reshape(-1, self.action_dict[a].n), next_actions[a][batch_size:].reshape(-1))
+                        bc_loss = self._model['ce_loss'](dis_logits[ii][batch_size:].reshape(-1, self.action_dict[a].n), next_actions[a][batch_size:].reshape(-1), is_weight[batch_size:].reshape(-1, 1, 1))
                     else:
-                        bc_loss += self._model['ce_loss'](dis_logits[ii][batch_size:].reshape(-1, self.action_dict[a].n), next_actions[a][batch_size:].reshape(-1))
+                        bc_loss += self._model['ce_loss'](dis_logits[ii][batch_size:].reshape(-1, self.action_dict[a].n), next_actions[a][batch_size:].reshape(-1), is_weight[batch_size:].reshape(-1, 1, 1))
                     ii += 1
                 else:
-                    bc_loss += -self.normal_log_prob_dens(camera_mu[batch_size:], camera_log_var[batch_size:], next_actions[a][batch_size:]).mean()
+                    bc_loss += -(self.normal_log_prob_dens(camera_mu[batch_size:], camera_log_var[batch_size:], next_actions[a][batch_size:]) * is_weight[batch_size:].reshape(-1, 1, 1)).mean()
                     current_zero = ((torch.abs(next_actions[a].view(-1, self.max_predict_range, 2)[batch_size:,:,0]) < 1e-5) & (torch.abs(next_actions[a].view(-1, self.max_predict_range, 2)[batch_size:,:,1]) < 1e-5)).long()
-                    bc_loss += self._model['ce_loss'](zero_logits[batch_size:].reshape(-1, 2), current_zero.reshape(-1))
-            loss = bc_loss
+                    bc_loss += self._model['ce_loss'](zero_logits[batch_size:].reshape(-1, 2), current_zero.reshape(-1), is_weight[batch_size:].reshape(-1, 1, 1))
+            loss = bc_loss * 0.1
             rdict = {'bc_loss': bc_loss}
+            
+            if self._stage != 0:
+                dis_logits = [torch.nn.LogSoftmax(-1)(d) for d in dis_logits]
+                zero_logits = torch.nn.LogSoftmax(-1)(zero_logits)
 
-            dis_logits = [torch.nn.LogSoftmax(-1)(d) for d in dis_logits]
-            zero_logits = torch.nn.LogSoftmax(-1)(zero_logits)
-
-            #learn policy
-            policy_loss = None
-            mean_Q /= self.num_policy_samples
-            for j in range(self.num_policy_samples):
-                advantage = (all_Qs[j][:,self.num_horizon-1] - mean_Q).unsqueeze(-1).expand(-1, self.max_predict_range).detach()
-                ii = 0
-                for a in self.action_dict:
-                    if a != 'camera':
-                        if policy_loss is None:
-                            policy_loss = -(advantage * torch.gather(dis_logits[ii], -1, all_actions[j][a].unsqueeze(-1))[:,:,0]).mean() - entropy_bonus * (dis_logits[ii].exp()*dis_logits[ii]).sum(-1).mean()
+                #learn policy
+                policy_loss = None
+                mean_Q /= self.num_policy_samples
+                for j in range(self.num_policy_samples):
+                    advantage = ((all_Qs[j][:,0] - mean_Q)*is_weight).unsqueeze(-1).expand(-1, self.max_predict_range).detach()
+                    ii = 0
+                    for a in self.action_dict:
+                        if a != 'camera':
+                            if policy_loss is None:
+                                policy_loss = -(advantage * torch.gather(dis_logits[ii], -1, all_actions[j][a].unsqueeze(-1))[:,:,0]).mean() + entropy_bonus * (dis_logits[ii].exp()*dis_logits[ii]).sum(-1).mean()
+                            else:
+                                policy_loss += -(advantage * torch.gather(dis_logits[ii], -1, all_actions[j][a].unsqueeze(-1))[:,:,0]).mean() + entropy_bonus * (dis_logits[ii].exp()*dis_logits[ii]).sum(-1).mean()
+                            ii += 1
                         else:
-                            policy_loss += -(advantage * torch.gather(dis_logits[ii], -1, all_actions[j][a].unsqueeze(-1))[:,:,0]).mean() - entropy_bonus * (dis_logits[ii].exp()*dis_logits[ii]).sum(-1).mean()
-                        ii += 1
-                    else:
-                        policy_loss += -(advantage * self.normal_log_prob_dens(camera_mu, camera_log_var, all_actions[j][a].detach()).sum(-1)).mean() * 0.1 #+ entropy_bonus * self.normal_pre_kl_divergence(camera_mu, camera_log_var)
-                        current_zero = ((torch.abs(all_actions[j][a].view(-1, self.max_predict_range, 2)[:,:,0]) < 1e-5) & (torch.abs(all_actions[j][a].view(-1, self.max_predict_range, 2)[:,:,1]) < 1e-5)).long()
-                        policy_loss += -(advantage * torch.gather(zero_logits, -1, current_zero.unsqueeze(-1))[:,:,0]).mean() - entropy_bonus * (zero_logits.exp()*zero_logits).sum(-1).mean()
-                policy_loss += (all_actions[j]['camera']).pow(2).mean() * 10.0
-            loss += policy_loss
-            rdict['policy_loss'] = policy_loss
+                            policy_loss += -(advantage * self.normal_log_prob_dens(camera_mu, camera_log_var, all_actions[j][a].detach()).sum(-1)).mean() #+ entropy_bonus * self.normal_pre_kl_divergence(camera_mu, camera_log_var + 5.0)
+                            current_zero = ((torch.abs(all_actions[j][a].view(-1, self.max_predict_range, 2)[:,:,0]) < 1e-5) & (torch.abs(all_actions[j][a].view(-1, self.max_predict_range, 2)[:,:,1]) < 1e-5)).long()
+                            policy_loss += -(advantage * torch.gather(zero_logits, -1, current_zero.unsqueeze(-1))[:,:,0]).mean() + entropy_bonus * (zero_logits.exp()*zero_logits * is_weight.view(-1, 1, 1)).sum(-1).mean()
+                    loss += (all_actions[j]['camera']).pow(2).mean() * 10.0 / self.num_policy_samples
+                loss += policy_loss / self.num_policy_samples
+                rdict['policy_loss'] = policy_loss
+            else:
+                for j in range(self.num_policy_samples):
+                    loss += (all_actions[j]['camera']).pow(2).mean() * 10.0 / self.num_policy_samples
         else:
             rdict = {}
 
         current_Qs = self._model['modules']['Q_values'](torch.cat([tembed, current_actions_cat], dim=1))
-        next_Qs = torch.cat([torch.zeros_like(next_Qs[:,0]).unsqueeze(-1), next_Qs[:,:-1]], dim=-1)
-        target = (reward[:,self.zero_time_point:(self.zero_time_point+self.max_predict_range)] * self.gammas.unsqueeze(0).expand(reward.shape[0], -1)).sum(1).unsqueeze(-1).expand(-1,self.num_horizon) + (GAMMA ** self.max_predict_range) * next_Qs
+        next_Qs = next_Qs[:,0]
+        target = (reward[:,self.zero_time_point:(self.zero_time_point+self.max_predict_range)] * self.gammas.unsqueeze(0).expand(reward.shape[0], -1)).sum(1) + (GAMMA ** self.max_predict_range) * next_Qs
         if is_weight is None:
-            Q_loss = (current_Qs - target.detach()).pow(2).mean()
+            Q_loss = (current_Qs[:,0] - target.detach()).pow(2).mean()
         else:
-            Q_loss = ((current_Qs - target.detach()).pow(2) * is_weight.view(-1, 1).expand(-1, self.num_horizon)).mean()
+            Q_loss = ((current_Qs[:,0] - target.detach()).pow(2) * is_weight.view(-1)).mean()
         if loss is None:
             loss = Q_loss.clone()
         else:
             loss += Q_loss
         with torch.no_grad():
-            rdict['Q_diff'] = torch.abs(current_Qs - target).mean()
+            rdict['Q_diff'] = (torch.abs(current_Qs[:,0] - target)*is_weight).mean()/is_weight.mean()
+            rdict['Q_std'] = current_Qs[:,0].std()
             rdict['current_Q_mean'] = current_Qs.mean()
             rdict['next_Q_mean'] = next_Qs.mean()
 
@@ -637,19 +666,33 @@ class MultiStep():
         with torch.no_grad():
             if 'tidxs' in input:
                 #prioritize using Q_diff
-                rdict['prio_upd'] = [{'error': torch.abs(current_Qs - target)[:batch_size,-1].data.cpu().clone(),
+                rdict['prio_upd'] = [{'error': torch.abs(current_Qs[:,0] - target)[:batch_size].data.cpu().clone(),
                                       'replay_num': 0,
                                       'worker_num': worker_num[0]},
-                                     {'error': torch.abs(current_Qs - target)[batch_size:,-1].data.cpu().clone(),
+                                     {'error': torch.abs(current_Qs[:,0] - target)[batch_size:].data.cpu().clone(),
                                       'replay_num': 1,
                                       'worker_num': worker_num[1]}]
 
         for d in rdict:
             if d != 'prio_upd' and not isinstance(rdict[d], str) and not isinstance(rdict[d], int):
                 rdict[d] = rdict[d].data.cpu().numpy()
-
+        if self.train_iter > 1e3 and rdict['Q_diff'] < 0.15:
+            int_tmp = np.power(rdict['Q_diff']/0.05, -8.0) / self._interpolation_speed
+            if int_tmp > 0.1:
+                int_tmp = 0.1
+            self._target_interpolation += int_tmp
+        if self._target_interpolation > 1.0:
+            self._target_interpolation = 0.0
+            if self._stage == 0:
+                self._stage = 1
+                self._target['modules'].load_state_dict(self._model['modules'].state_dict())
+            else:
+                self._stage = 2
+                self._last_target['modules'].load_state_dict(self._target['modules'].state_dict())
+                self._target['modules'].load_state_dict(self._model['modules'].state_dict())
         self.train_iter += 1
         rdict['train_iter'] = self.train_iter / 10000
+        rdict['target_interpolation'] = self._target_interpolation
         return rdict
 
     def normal_pre_kl_divergence(self, mu1, log_var1):

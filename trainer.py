@@ -28,12 +28,12 @@ class Trainer():
                 agent = AgentClass(state_shape, num_actions, args)
             else:
                 agent = AgentClass(state_shape, num_actions, args, *add_args)
-            if args.load is not None:
-                agent.loadstore(args.load)
             try:
                 agent.build_target()
             except:
                 pass
+            if args.load is not None:
+                agent.loadstore(args.load)
 
             old_dt = datetime.datetime.now()
             old_dt2 = datetime.datetime.now()

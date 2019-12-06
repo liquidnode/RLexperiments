@@ -29,7 +29,7 @@ def main():
     parser.add_argument("--sample-efficiency", type=int, default=int(8), help="")
     parser.add_argument("--chunk-size", type=int, default=int(100), help="")
     parser.add_argument("--num-replay-workers", type=int, default=1, help="Number of replay buffer workers")
-    parser.add_argument("--per", default=True, action="store_true", help="Use prioritized experience replay.")
+    parser.add_argument("--per", default=False, action="store_true", help="Use prioritized experience replay.")
     parser.add_argument("--trainstart", type=int, default=int(1e4), help="")
     parser.add_argument("--er", type=int, default=128, help="Number of experiences used to build a replay minibatch")
         
@@ -79,14 +79,14 @@ def main():
         delta_a = (past_range-num_past_times-1)/(num_past_times**2)
         past_times = [-int(delta_a*n**2+n+1) for n in range(num_past_times)]
         past_times.reverse()
-        time_skip = 10
+        time_skip = 4
         time_deltas = past_times + list(range(0, (time_skip*2)+1, 1))
         next_past_times = [-int(delta_a*n**2+n+1) + time_skip for n in range(num_past_times)]
         next_past_times.reverse()
         time_deltas = next_past_times + time_deltas
     else:
         args.num_past_times = 0
-        time_skip = 10 #number of steps in the multi-step model
+        time_skip = 4 #number of steps in the multi-step model
         time_deltas = list(range(0, (time_skip*2)+1, 1))
     pov_time_deltas = [0, time_skip]
     #time_deltas and pov_time_deltas are used to mark multiple past and future states as relevant for the training
