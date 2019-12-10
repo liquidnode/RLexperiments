@@ -37,7 +37,7 @@ def main():
     parser.add_argument("--history-a", type=int, default=3, help="Number of historic actions")
     parser.add_argument("--min-num-future-rewards", type=int, default=50, help="Minimal number of future rewards during training")
     parser.add_argument("--cnn-type", default='atari', type=str, choices=['atari', 'mnist', 'adv', 'fixup'], help="General shape of the CNN, if any. Either DQN-Like, or image-classification-like with more layers")
-    parser.add_argument("--hidden", default=256, type=int, help="Hidden neurons of the policy network")
+    parser.add_argument("--hidden", default=256, type=int, help="Hidden neurons of the network")
     parser.add_argument("--layers", default=1, type=int, help="Number of hidden layers in the networks")
     parser.add_argument("--state-layers", default=0, type=int, help="Number of hidden layers in the state networks")
     parser.add_argument("--lr", default=1e-4, type=float, help="Learning rate of the neural network")
@@ -79,14 +79,14 @@ def main():
         delta_a = (past_range-num_past_times-1)/(num_past_times**2)
         past_times = [-int(delta_a*n**2+n+1) for n in range(num_past_times)]
         past_times.reverse()
-        time_skip = 4
+        time_skip = 10
         time_deltas = past_times + list(range(0, (time_skip*2)+1, 1))
         next_past_times = [-int(delta_a*n**2+n+1) + time_skip for n in range(num_past_times)]
         next_past_times.reverse()
         time_deltas = next_past_times + time_deltas
     else:
         args.num_past_times = 0
-        time_skip = 4 #number of steps in the multi-step model
+        time_skip = 10 #number of steps in the multi-step model
         time_deltas = list(range(0, (time_skip*2)+1, 1))
     pov_time_deltas = [0, time_skip]
     #time_deltas and pov_time_deltas are used to mark multiple past and future states as relevant for the training

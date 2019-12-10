@@ -10,6 +10,19 @@ import math
 GAMMA = 0.99
 INFODIM = False
 
+
+class CameraBias(torch.nn.Module):
+    def __init__(self, size, device):
+        super(CameraBias, self).__init__()
+        self.bias = (torch.arange(0, size, device=device).float() / ((size - 1) // 2)) - 1.0
+        self.bias = self.bias.reshape((1, 1, size, 1)).expand(-1, -1, -1, size) ** 2 + \
+            self.bias.reshape((1, 1, 1, size)).expand(-1, -1, size, -1) ** 2
+        self.bias = - 30.0 * self.bias
+        self.bias = torch.tensor(self.bias, requires_grad=True)
+
+    def forward(self, x):
+        return x + self.bias
+
 class VisualNet(torch.nn.Module):
     def __init__(self, state_shape, args, cont_dim=None, disc_dims=None, variational=False):
         super(VisualNet, self).__init__()
@@ -263,6 +276,17 @@ class MultiStep():
         self.only_visnet = only_visnet
         self._model = self._make_model()
         self._target = None
+
+        #camera map coeff
+        x_1 = 0.7
+        y_1 = 90.0/180.0
+        v = np.array([1.0, y_1, y_1])
+        M = np.array([[1.0, 1.0, 1.0],
+                      [x_1**2, x_1, 1.0],
+                      [2*x_1**2, x_1, 0.0]])
+        self.cam_coeffs = np.linalg.solve(M, v)
+        self.x_1 = x_1
+        self.y_1 = y_1
         
     def build_target(self):
         self._target = self._make_model()
@@ -345,18 +369,31 @@ class MultiStep():
                 self.state_dim += self.state_shape[o][0]
         print('Input state dim', self.state_dim)
         #input to memory is state_embeds
-        print('TODO add state_dim to memory')
         self.complete_state = self.cnn_embed_dim + self.state_dim
         if self.MEMORY_MODEL:
+            print('TODO add state_dim to memory')
             modules['memory'] = MemoryModel(self.args, self.cnn_embed_dim, self.past_time[-self.args.num_past_times:])
             self.memory_embed = modules['memory'].memory_embed_dim
             self.complete_state += self.memory_embed
 
-        modules['actions_predict'] = torch.nn.Sequential(torch.nn.Linear(self.complete_state, self.args.hidden),
+        modules['actions_predict_hidden'] = torch.nn.Sequential(torch.nn.Linear(self.complete_state, self.args.hidden),
                                                          Lambda(lambda x: swish(x)),
                                                          torch.nn.Linear(self.args.hidden, self.args.hidden),
-                                                         Lambda(lambda x: swish(x)),
-                                                         torch.nn.Linear(self.args.hidden, (self.action_dim-2)*self.max_predict_range+4*self.max_predict_range+2*self.max_predict_range))#discrete probs + mu/var of continuous actions + zero cont. probs
+                                                         Lambda(lambda x: swish(x)))
+
+        modules['actions_predict'] = torch.nn.Linear(self.args.hidden, (self.action_dim-2)*self.max_predict_range+2*self.max_predict_range)#discrete probs + zero cont. probs
+
+        modules['camera_predict'] = torch.nn.Sequential(torch.nn.Linear(self.args.hidden, 8*4*4),
+                                                        Lambda(lambda x: swish(x.reshape(-1, 8, 4, 4))),
+                                                        torch.nn.ConvTranspose2d(8, 8, 3, 2), #9x9
+                                                        torch.nn.BatchNorm2d(8),
+                                                        Lambda(lambda x: swish(x)),
+                                                        torch.nn.ConvTranspose2d(8, 6, 3, 2), #19x19
+                                                        torch.nn.BatchNorm2d(6),
+                                                        Lambda(lambda x: swish(x)),
+                                                        torch.nn.ConvTranspose2d(6, self.max_predict_range, 5, 3),
+                                                        CameraBias(59, self.device)) #59x59
+        self.cam_map_size = 59
 
         modules['Q_values'] = torch.nn.Sequential(torch.nn.Linear(self.complete_state + (self.action_dim + 2) * self.max_predict_range, self.args.hidden*2),
                                                   Lambda(lambda x: swish(x)),
@@ -412,9 +449,19 @@ class MultiStep():
         return model
 
     def inverse_map_camera(self, x):
-        return x / 180.0
+        x = x / 180.0
+        #x = torch.sign(x)*torch.pow(torch.abs(x), 1.0/2.0)
+        b = -self.cam_coeffs[1] +\
+           torch.sqrt(torch.abs(self.cam_coeffs[1]**2-4*self.cam_coeffs[0]*(self.cam_coeffs[2]-torch.abs(x))))
+        b /= 2.0 * self.cam_coeffs[0]
+        x = torch.where(torch.abs(x) < self.y_1, x*self.x_1/self.y_1, 
+                        torch.sign(x)*b)
+        return x
 
     def map_camera(self, x):
+        #x = np.sign(x) * x ** 2
+        x = np.where(np.abs(x) < self.x_1, x*self.y_1/self.x_1, 
+                     np.sign(x)*(self.cam_coeffs[0]*x**2+self.cam_coeffs[1]*np.abs(x)+self.cam_coeffs[2]))
         return x * 180.0
 
     def get_complete_embed(self, model, pov_state, state, past_embeds=None):
@@ -434,6 +481,12 @@ class MultiStep():
         embed = torch.cat(embed, dim=-1)
         return embed
 
+    def sample_camera(self, cam_map):
+        cam_choose = torch.distributions.Categorical(logits=cam_map).sample().reshape(-1, self.max_predict_range) #[batch_size,self.max_predict_range]
+        cam_choose_x = ((cam_choose % self.cam_map_size) + torch.zeros((cam_choose.shape[0], cam_choose.shape[1]), device=self.device).uniform_()) * (2.0/self.cam_map_size) - 1.0
+        cam_choose_y = ((cam_choose // self.cam_map_size) + torch.zeros((cam_choose.shape[0], cam_choose.shape[1]), device=self.device).uniform_()) * (2.0/self.cam_map_size) - 1.0
+        return torch.stack([cam_choose_x, cam_choose_y], dim=-1), cam_choose
+
     def pretrain(self, input, worker_num=None):
         assert False #not implemented
 
@@ -449,6 +502,9 @@ class MultiStep():
             if k in self.state_keys or k in embed_keys:
                 states[k] = torch.cat([variable(input[k]),variable(expert_input[k])],dim=0)
         actions = {'camera': self.inverse_map_camera(torch.cat([variable(input['camera']),variable(expert_input['camera'])],dim=0))}
+        #quantize camera actions
+        actions['camera_quant'] = torch.clamp(((actions['camera'] * 0.5 + 0.5) * self.cam_map_size).long(), max=self.cam_map_size-1)
+        actions['camera_quant'] = actions['camera_quant'][:,:,0] + actions['camera_quant'][:,:,1] * self.cam_map_size
         for a in self.action_dict:
             if a != 'camera':
                 actions[a] = torch.cat([variable(input[a], True).long(),variable(expert_input[a], True).long()],dim=0)
@@ -481,7 +537,7 @@ class MultiStep():
         for k in actions:
             next_actions[k] = actions[k][:,(self.zero_time_point+self.max_predict_range):(self.zero_time_point+self.max_predict_range*2)]
         assert states['pov'].shape[1] == 2
-        
+
         if self.MEMORY_MODEL:
             with torch.no_grad():
                 past_embeds = states['pov_embed'][:,(self.zero_time_point-self.args.num_past_times):self.zero_time_point]
@@ -524,12 +580,11 @@ class MultiStep():
                 current_actions_cat.append(current_zero)
         current_actions_cat = torch.cat(current_actions_cat, dim=1)
 
-        actions_logits = self._model['modules']['actions_predict'](nembed).view(-1, self.max_predict_range, self.action_dim + 4)
-        dis_logits, zero_logits, camera_mu, camera_log_var = actions_logits[:,:,:(self.action_dim-2)], actions_logits[:,:,(self.action_dim-2):self.action_dim], actions_logits[:,:,self.action_dim:(self.action_dim+2)], actions_logits[:,:,(self.action_dim+2):]
-        camera_mu *= 0.1
-        camera_log_var = 5.0 - torch.nn.Softplus()(5.0 - torch.nn.Softplus()(camera_log_var + 5.0) + 5.0)
-        camera_log_var -= 5.0
+        actions_hidden = self._model['modules']['actions_predict_hidden'](nembed)
+        actions_logits = self._model['modules']['actions_predict'](actions_hidden).view(-1, self.max_predict_range, self.action_dim)
+        dis_logits, zero_logits = actions_logits[:,:,:(self.action_dim-2)], actions_logits[:,:,(self.action_dim-2):self.action_dim]
         dis_logits = torch.split(dis_logits, self.action_split, -1)
+        cam_map = self._model['modules']['camera_predict'](actions_hidden).reshape(-1,self.max_predict_range,self.cam_map_size*self.cam_map_size)
 
         #get best (next) action
         next_Qs = None
@@ -547,11 +602,11 @@ class MultiStep():
                     actions_cat.append(one_hot(c_actions[a], self.action_dict[a].n, self.device).view(-1, self.action_dict[a].n*self.max_predict_range))
                     ii += 1
                 else:
-                    camera = sample_gaussian(camera_mu, camera_log_var)
+                    camera, camera_quant = self.sample_camera(cam_map)
                     zero_camera = torch.distributions.Categorical(logits=zero_logits).sample()
                     camera = torch.where((zero_camera == 1).unsqueeze(-1).expand(-1,-1,2), torch.zeros_like(camera), camera)
                     c_actions['camera'] = camera.clone()
-                    camera = torch.tanh(camera)
+                    c_actions['camera_quant'] = camera_quant.clone()
                     actions_cat.append(camera.view(-1, 2*self.max_predict_range))
                     actions_cat.append(1.0 - zero_camera.float())
                     actions_cat.append(zero_camera.float())
@@ -582,26 +637,27 @@ class MultiStep():
 
         if self.train_iter % 1 == 0:
             #add bc loss
-            entropy_bonus = 0.001
+            entropy_bonus = 0.0
             bc_loss = None
             ii = 0
             for a in self.action_dict:
                 if a != 'camera':
                     if bc_loss is None:
-                        bc_loss = self._model['ce_loss'](dis_logits[ii][batch_size:].reshape(-1, self.action_dict[a].n), next_actions[a][batch_size:].reshape(-1), is_weight[batch_size:].reshape(-1, 1, 1))
+                        bc_loss = self._model['ce_loss'](dis_logits[ii][batch_size:].reshape(-1, self.action_dict[a].n), next_actions[a][batch_size:].reshape(-1), is_weight[batch_size:].reshape(-1, 1))
                     else:
-                        bc_loss += self._model['ce_loss'](dis_logits[ii][batch_size:].reshape(-1, self.action_dict[a].n), next_actions[a][batch_size:].reshape(-1), is_weight[batch_size:].reshape(-1, 1, 1))
+                        bc_loss += self._model['ce_loss'](dis_logits[ii][batch_size:].reshape(-1, self.action_dict[a].n), next_actions[a][batch_size:].reshape(-1), is_weight[batch_size:].reshape(-1, 1))
                     ii += 1
                 else:
-                    bc_loss += -(self.normal_log_prob_dens(camera_mu[batch_size:], camera_log_var[batch_size:], next_actions[a][batch_size:]) * is_weight[batch_size:].reshape(-1, 1, 1)).mean()
+                    bc_loss += self._model['ce_loss'](cam_map[batch_size:].reshape(-1,self.cam_map_size*self.cam_map_size), next_actions['camera_quant'][batch_size:].reshape(-1), is_weight[batch_size:].reshape(-1, 1))
                     current_zero = ((torch.abs(next_actions[a].view(-1, self.max_predict_range, 2)[batch_size:,:,0]) < 1e-5) & (torch.abs(next_actions[a].view(-1, self.max_predict_range, 2)[batch_size:,:,1]) < 1e-5)).long()
-                    bc_loss += self._model['ce_loss'](zero_logits[batch_size:].reshape(-1, 2), current_zero.reshape(-1), is_weight[batch_size:].reshape(-1, 1, 1))
-            loss = bc_loss * 0.1
+                    bc_loss += self._model['ce_loss'](zero_logits[batch_size:].reshape(-1, 2), current_zero.reshape(-1), is_weight[batch_size:].reshape(-1, 1))
+            loss = bc_loss
             rdict = {'bc_loss': bc_loss}
             
             if self._stage != 0:
                 dis_logits = [torch.nn.LogSoftmax(-1)(d) for d in dis_logits]
                 zero_logits = torch.nn.LogSoftmax(-1)(zero_logits)
+                cam_map = torch.nn.LogSoftmax(-1)(cam_map)
 
                 #learn policy
                 policy_loss = None
@@ -617,15 +673,11 @@ class MultiStep():
                                 policy_loss += -(advantage * torch.gather(dis_logits[ii], -1, all_actions[j][a].unsqueeze(-1))[:,:,0]).mean() + entropy_bonus * (dis_logits[ii].exp()*dis_logits[ii]).sum(-1).mean()
                             ii += 1
                         else:
-                            policy_loss += -(advantage * self.normal_log_prob_dens(camera_mu, camera_log_var, all_actions[j][a].detach()).sum(-1)).mean() #+ entropy_bonus * self.normal_pre_kl_divergence(camera_mu, camera_log_var + 5.0)
+                            policy_loss += -(advantage * torch.gather(cam_map, -1, all_actions[j]['camera_quant'].unsqueeze(-1))[:,:,0]).mean() + entropy_bonus * (cam_map.exp()*cam_map).sum(-1).mean()
                             current_zero = ((torch.abs(all_actions[j][a].view(-1, self.max_predict_range, 2)[:,:,0]) < 1e-5) & (torch.abs(all_actions[j][a].view(-1, self.max_predict_range, 2)[:,:,1]) < 1e-5)).long()
                             policy_loss += -(advantage * torch.gather(zero_logits, -1, current_zero.unsqueeze(-1))[:,:,0]).mean() + entropy_bonus * (zero_logits.exp()*zero_logits * is_weight.view(-1, 1, 1)).sum(-1).mean()
-                    loss += (all_actions[j]['camera']).pow(2).mean() * 10.0 / self.num_policy_samples
                 loss += policy_loss / self.num_policy_samples
                 rdict['policy_loss'] = policy_loss
-            else:
-                for j in range(self.num_policy_samples):
-                    loss += (all_actions[j]['camera']).pow(2).mean() * 10.0 / self.num_policy_samples
         else:
             rdict = {}
 
@@ -676,8 +728,8 @@ class MultiStep():
         for d in rdict:
             if d != 'prio_upd' and not isinstance(rdict[d], str) and not isinstance(rdict[d], int):
                 rdict[d] = rdict[d].data.cpu().numpy()
-        if self.train_iter > 1e3 and rdict['Q_diff'] < 0.15:
-            int_tmp = np.power(rdict['Q_diff']/0.05, -8.0) / self._interpolation_speed
+        if self.train_iter > 1e3:
+            int_tmp = np.power(rdict['Q_diff']/0.12, -8.0) / self._interpolation_speed
             if int_tmp > 0.1:
                 int_tmp = 0.1
             self._target_interpolation += int_tmp
@@ -752,11 +804,9 @@ class MultiStep():
                 if o in self.state_keys and o != 'pov':
                     tembed.append(tstate[o])
             tembed = torch.cat(tembed, dim=-1)
-            current_best_actions = self._model['modules']['actions_predict'](tembed).view(-1, self.max_predict_range, self.action_dim + 4)
-            dis_logits, zero_logits, camera_mu, camera_log_var = current_best_actions[:,:,:(self.action_dim-2)], current_best_actions[:,:,(self.action_dim-2):self.action_dim], current_best_actions[:,:,self.action_dim:(self.action_dim+2)], current_best_actions[:,:,(self.action_dim+2):]
-            camera_mu *= 0.1
-            camera_log_var = 5.0 - torch.nn.Softplus()(5.0 - torch.nn.Softplus()(camera_log_var + 5.0) + 5.0)
-            camera_log_var -= 5.0
+            actions_hidden = self._model['modules']['actions_predict_hidden'](tembed)
+            current_best_actions = self._model['modules']['actions_predict'](actions_hidden).view(-1, self.max_predict_range, self.action_dim)
+            dis_logits, zero_logits = current_best_actions[:,:,:(self.action_dim-2)], current_best_actions[:,:,(self.action_dim-2):self.action_dim]
             dis_logits = torch.split(dis_logits, self.action_split, -1)
             action = OrderedDict()
             ii = 0
@@ -765,7 +815,11 @@ class MultiStep():
                     action[a] = torch.distributions.Categorical(logits=dis_logits[ii][:,0,:]).sample()[0].item()
                     ii += 1
                 else:
-                    action[a] = np.tanh(sample_gaussian(camera_mu[:,0], camera_log_var[:,0])[0,:].data.cpu().numpy())
+                    cam_map = self._model['modules']['camera_predict'](actions_hidden)[:,0].reshape(1,-1)
+                    cam_choose = torch.distributions.Categorical(logits=cam_map).sample()[0].item()
+                    cam_choose_x = (((cam_choose % self.cam_map_size) + np.random.sample()) * (2.0/self.cam_map_size)) - 1.0
+                    cam_choose_y = (((cam_choose // self.cam_map_size) + np.random.sample()) * (2.0/self.cam_map_size)) - 1.0
+                    action[a] = np.array([cam_choose_x, cam_choose_y])
                     zero_act = torch.distributions.Categorical(logits=zero_logits[:,0,:]).sample()[0].item()
                     if zero_act == 1:
                         action[a] *= 0.0
