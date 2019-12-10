@@ -1,6 +1,7 @@
 # RLexperiments
 This project contains various reinforcement/imitation learning experiments, such as implementations of Implicit Quantile Networks, Neural Episodic Control, FeUdal Networks, Bootstrapped Dual Policy Iteration, Prioritized Experience Replay, TD3. Most of them are applied to the MineRL enviroment package. The result of the latest experiment, an off-policy multiaction actor-critic agent, can be seen here https://www.youtube.com/watch?v=oyNKCeMywtY.
 
+This project also features an easily extendable multi-processing system of producer/consumer workers (trajectory generator, replay buffer and trainer workers).
 
 This repository contains modified and unmodified code from:
 - https://github.com/facebookresearch/XLM (lightly modified HashingMemory module)
