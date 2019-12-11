@@ -1,5 +1,5 @@
 # RLexperiments
-This project contains various reinforcement/imitation learning experiments, such as implementations of Implicit Quantile Networks, Neural Episodic Control, FeUdal Networks, Bootstrapped Dual Policy Iteration, Prioritized Experience Replay, TD3. Most of them are applied to the MineRL enviroment package. The result of the latest experiment, an off-policy multiaction actor-critic agent, can be seen here https://www.youtube.com/watch?v=oyNKCeMywtY and is featured in the root directory of this repository. The other experiments can be found in the all_experiments/ directory.
+This project contains various reinforcement/imitation learning experiments, such as implementations of Implicit Quantile Networks \[1\], Neural Episodic Control \[2\], FeUdal Networks \[3\], Bootstrapped Dual Policy Iteration \[4\], Prioritized Experience Replay \[5\], TD3 \[6\]. Most of them are applied to the MineRL enviroment package. The result of the latest experiment, an off-policy multiaction actor-critic agent, can be seen here https://www.youtube.com/watch?v=oyNKCeMywtY and is featured in the root directory of this repository. The other experiments can be found in the all_experiments/ directory.
 
 This project also features an easily extendable multi-processing system of producer/consumer workers (trajectory generator, replay buffer and trainer workers).
 
@@ -15,3 +15,11 @@ This repository contains modified and unmodified code from:
 - https://github.com/christiancosgrove/pytorch-spectral-normalization-gan (for spectral norm)
 - https://github.com/rlcode/per (for the SumTree class)
 - https://github.com/vub-ai-lab/bdpi (Learner, Actor, Critic and LearnerModel class structure are used as templates)
+
+References:
+\[1\] W. Dabney et al. Implicit quantile networks for distributional reinforcement learning. In International Conference on Machine Learning, pages 1104–1113, 2018.
+\[2\] A. Pritzel et al. Neural episodic control. In Proceedings of the 34th International Conference on Machine Learning-Volume 70, pages 2827–2836. JMLR. org, 2017.
+\[3\] A. S. Vezhnevets et al. Feudal networks for hierarchical reinforcement learning. In Proceedings of the 34th International Conference on Machine Learning-Volume 70, pages 3540–3549. JMLR. org, 2017.
+\[4\] D. Steckelmacher et al. Sample-efficient model-free reinforcement learning with off-policy critics. arXiv preprint arXiv:1903.04193, 2019.
+\[5\] S. Tom et al. Prioritized experience replay. arXiv preprint arXiv:1511.05952, 2015.
+\[6\] S. Fujimoto et al. Addressing Function Approximation Error in Actor-Critic Methods. International Conference on Machine Learning. 2018.
