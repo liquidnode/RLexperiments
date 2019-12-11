@@ -17,9 +17,15 @@ This repository contains modified and unmodified code from:
 - https://github.com/vub-ai-lab/bdpi (Learner, Actor, Critic and LearnerModel class structure are used as templates)
 
 References:
- \[1\] W. Dabney et al. Implicit quantile networks for distributional reinforcement learning. In International Conference on Machine Learning, pages 1104–1113, 2018.
- \[2\] A. Pritzel et al. Neural episodic control. In Proceedings of the 34th International Conference on Machine Learning-Volume 70, pages 2827–2836. JMLR. org, 2017.
- \[3\] A. S. Vezhnevets et al. Feudal networks for hierarchical reinforcement learning. In Proceedings of the 34th International Conference on Machine Learning-Volume 70, pages 3540–3549. JMLR. org, 2017.
- \[4\] D. Steckelmacher et al. Sample-efficient model-free reinforcement learning with off-policy critics. arXiv preprint arXiv:1903.04193, 2019.
- \[5\] S. Tom et al. Prioritized experience replay. arXiv preprint arXiv:1511.05952, 2015.
- \[6\] S. Fujimoto et al. Addressing Function Approximation Error in Actor-Critic Methods. International Conference on Machine Learning. 2018.
+
+\[1\] W. Dabney et al. Implicit quantile networks for distributional reinforcement learning. In International Conference on Machine Learning, pages 1104–1113, 2018.
+
+\[2\] A. Pritzel et al. Neural episodic control. In Proceedings of the 34th International Conference on Machine Learning-Volume 70, pages 2827–2836. JMLR. org, 2017.
+
+\[3\] A. S. Vezhnevets et al. Feudal networks for hierarchical reinforcement learning. In Proceedings of the 34th International Conference on Machine Learning-Volume 70, pages 3540–3549. JMLR. org, 2017.
+
+\[4\] D. Steckelmacher et al. Sample-efficient model-free reinforcement learning with off-policy critics. arXiv preprint arXiv:1903.04193, 2019.
+
+\[5\] S. Tom et al. Prioritized experience replay. arXiv preprint arXiv:1511.05952, 2015.
+
+\[6\] S. Fujimoto et al. Addressing Function Approximation Error in Actor-Critic Methods. International Conference on Machine Learning. 2018.
