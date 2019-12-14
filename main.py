@@ -5,8 +5,10 @@ from expert_traj_generator import ExpertGenerator
 from actor_traj_generator import ActorTrajGenerator
 from replaybuffers import ReplayBuffer, ReplayBufferPER
 from trainer import Trainer
+from traj_modifiers import FutureRewardTimeLeftModifier
 import time
 import copy
+import importlib
 
 DEBUG_ACTOR_REPLAY_BUFFER = True
 DEBUG_EXPERT_REPLAY_BUFFER = False
@@ -35,7 +37,6 @@ def main():
         
     parser.add_argument("--history-ar", type=int, default=20, help="Number of historic rewards")
     parser.add_argument("--history-a", type=int, default=3, help="Number of historic actions")
-    parser.add_argument("--min-num-future-rewards", type=int, default=50, help="Minimal number of future rewards during training")
     parser.add_argument("--cnn-type", default='atari', type=str, choices=['atari', 'mnist', 'adv', 'fixup'], help="General shape of the CNN, if any. Either DQN-Like, or image-classification-like with more layers")
     parser.add_argument("--hidden", default=256, type=int, help="Hidden neurons of the network")
     parser.add_argument("--layers", default=1, type=int, help="Number of hidden layers in the networks")
@@ -68,27 +69,9 @@ def main():
 
     args = parser.parse_args()
 
-    MEMORY_MODEL = args.needs_embedding
-    if MEMORY_MODEL:
-        #the memory model is used
-        #past states have to be send to the trainer process
-        num_past_times = 32
-        args.num_past_times = num_past_times
-        past_range_seconds = 60.0
-        past_range = past_range_seconds / 0.05
-        delta_a = (past_range-num_past_times-1)/(num_past_times**2)
-        past_times = [-int(delta_a*n**2+n+1) for n in range(num_past_times)]
-        past_times.reverse()
-        time_skip = 10
-        time_deltas = past_times + list(range(0, (time_skip*2)+1, 1))
-        next_past_times = [-int(delta_a*n**2+n+1) + time_skip for n in range(num_past_times)]
-        next_past_times.reverse()
-        time_deltas = next_past_times + time_deltas
-    else:
-        args.num_past_times = 0
-        time_skip = 10 #number of steps in the multi-step model
-        time_deltas = list(range(0, (time_skip*2)+1, 1))
-    pov_time_deltas = [0, time_skip]
+    AgentClass = getattr(importlib.import_module(args.agent_from), args.agent_name)
+    need_dict, time_deltas, pov_time_deltas = AgentClass.needed_state_info(args)
+    min_num_future_rewards = need_dict['min_num_future_rewards']
     #time_deltas and pov_time_deltas are used to mark multiple past and future states as relevant for the training
     
     HashingMemory.check_params(args)
@@ -109,6 +92,17 @@ def main():
                                    copy_queue=copy_queues[n+1], 
                                    add_args=[time_deltas]) 
                    for n in range(num_workers)]
+    data_description = actor_traj.data_description()
+    state_shape = actor_traj.state_shape
+    num_actions = actor_traj.num_actions
+
+    #apply modifier workers
+    if 'needs_future_reward_and_time_left' in need_dict and need_dict['needs_future_reward_and_time_left']:
+        actor_traj = FutureRewardTimeLeftModifier(data_description, actor_traj.traj_pipe[0])
+        data_description = actor_traj.data_description
+        expert_traj = [FutureRewardTimeLeftModifier(data_description, expert_traj[n].traj_pipe[0]) 
+                       for n in range(len(expert_traj))]
+
     assert len(actor_traj.traj_pipe) == args.num_replay_workers
     end = time_deltas[-1]
     if args.per:
@@ -116,22 +110,22 @@ def main():
         #these queus are used to send priority updates back to the replay buffers
         prio_queues = [[Queue(2) for n in range(num_workers)], [Queue(2) for n in range(num_workers)]]
         replay_actor = ReplayBufferPER(args, 
-                                       actor_traj.data_description(), 
+                                       data_description, 
                                        actor_traj.traj_pipe, 
                                        prio_queues[0], 
                                        time_deltas, 
-                                       args.min_num_future_rewards+end, 
+                                       min_num_future_rewards+end, 
                                        pov_time_deltas=pov_time_deltas, 
                                        blocking=True,
                                        no_process=DEBUG_ACTOR_REPLAY_BUFFER)
         args = copy.deepcopy(args)
         args.sample_efficiency = 1
         replay_expert = ReplayBufferPER(args, 
-                                        actor_traj.data_description(), 
+                                        data_description, 
                                         expert_traj[0].traj_pipe, 
                                         prio_queues[1], 
                                         time_deltas, 
-                                        args.min_num_future_rewards+end, 
+                                        min_num_future_rewards+end, 
                                         pov_time_deltas=pov_time_deltas, 
                                         blocking=True,
                                         no_process=DEBUG_EXPERT_REPLAY_BUFFER)
@@ -139,28 +133,28 @@ def main():
         #use uniform sampling replay buffer workers
         prio_queues = None
         replay_actor = ReplayBuffer(args, 
-                                    actor_traj.data_description(), 
+                                    data_description, 
                                     actor_traj.traj_pipe, 
                                     time_deltas, 
-                                    args.min_num_future_rewards+end, 
+                                    min_num_future_rewards+end, 
                                     pov_time_deltas=pov_time_deltas, 
                                     blocking=True,
                                     no_process=DEBUG_ACTOR_REPLAY_BUFFER)
         args = copy.deepcopy(args)
         args.sample_efficiency = 1
         replay_expert = ReplayBuffer(args, 
-                                     actor_traj.data_description(), 
+                                     data_description, 
                                      expert_traj[0].traj_pipe, 
                                      time_deltas, 
-                                     args.min_num_future_rewards+end, 
+                                     min_num_future_rewards+end, 
                                      pov_time_deltas=pov_time_deltas, 
                                      blocking=True,
                                      no_process=DEBUG_EXPERT_REPLAY_BUFFER)
     #create the trainer process
     trainer = Trainer(args.agent_name, 
                       args.agent_from, 
-                      actor_traj.state_shape, 
-                      actor_traj.num_actions, 
+                      state_shape, 
+                      num_actions, 
                       args, 
                       [replay_actor.batch_queues, replay_expert.batch_queues], 
                       add_args=[time_deltas], 

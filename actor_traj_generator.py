@@ -257,6 +257,7 @@ class ActorTrajGenerator(TrajectoryGenerator):
                             record_obs_action_reward['observation_'+obs_s].append(saveorigenv.orig_obs[obs_s])
 
                 ii = 0
+                last_reward = 0.0
                 while (not done):
                     if copy_queue is not None and ii % 10 == 0:
                         if not copy_queue.empty():
@@ -273,13 +274,14 @@ class ActorTrajGenerator(TrajectoryGenerator):
 
                     for k in env_state:
                         batch[k][batch_index] = env_state[k]
-                    action, info = actor.select_action(env_state)
+                    action, info = actor.select_action(env_state, last_reward)
                     for k in add_desc:
                         batch[k][batch_index] = info[k]
                     for name in aspace:
                         batch[name][batch_index] = action[name]
 
                     env_state, reward, done, _ = env.step(action)
+                    last_reward = reward
                     try:
                         if args.log_reward:
                             if reward > 0.0:
@@ -304,14 +306,16 @@ class ActorTrajGenerator(TrajectoryGenerator):
 
 
 
-                    if batch_index == packet_size - 1:
+                    if batch_index == packet_size - 1 or done:
                         #send packet to replay buffer
                         r_batch = {}
                         for b in batch:
-                            r_batch[b] = SharedMemory(batch[b])
+                            r_batch[b] = SharedMemory(batch[b][:(batch_index+1)])
                             r_batch[b] = r_batch[b].shared_memory()
                         TrajectoryGenerator.write_pipe(traj_pipe[ie%len(traj_pipe)], r_batch)
-                    batch_index = (batch_index + 1)%packet_size
+                        batch_index = 0
+                    else:
+                        batch_index = (batch_index + 1)%packet_size
 
                     cumulative_reward += reward
 
