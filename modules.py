@@ -3,7 +3,7 @@ from torch.nn import functional as F
 from utils import variable, Lambda, swish, Flatten, sample_gaussian, one_hot
 import math
 
-
+#Implementation of "Variational Dropout Sparsifies Deep Neural Networks" https://arxiv.org/abs/1701.05369
 class VariationalDropoutLinear(torch.nn.Module):
     def __init__(self, in_size, out_size):
         super(VariationalDropoutLinear, self).__init__()
