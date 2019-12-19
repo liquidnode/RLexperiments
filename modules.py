@@ -3,6 +3,53 @@ from torch.nn import functional as F
 from utils import variable, Lambda, swish, Flatten, sample_gaussian, one_hot
 import math
 
+
+class VariationalDropoutLinear(torch.nn.Module):
+    def __init__(self, in_size, out_size):
+        super(VariationalDropoutLinear, self).__init__()
+        self.linear = torch.nn.Linear(in_size, out_size)
+        self.log_sigma_sqr = torch.nn.Parameter(torch.Tensor(in_size, out_size))
+        self.log_sigma_sqr.data.fill_(-10.0)
+
+    def forward(self, x):
+        _wt = self.linear.weight.t()
+        log_alpha = torch.clamp(self.log_sigma_sqr - 2.0 * torch.log(torch.abs(_wt)+1e-8),
+                                max=8.0,
+                                min=-8.0)
+        if self.training:
+            mean = self.linear(x)
+            x2 = x * x
+            _wt2 = _wt*_wt
+            std = torch.sqrt(x2.matmul(log_alpha.exp()*_wt2))
+            return mean + std * torch.normal(torch.zeros_like(mean), torch.ones_like(mean))
+        else:
+            return x.matmul(torch.where(log_alpha>3.0,
+                                        torch.zeros_like(_wt),
+                                        _wt))+self.linear.bias
+
+    def to_loss(self):
+        _wt = self.linear.weight.t()
+        k1 = 0.63576
+        k2 = 1.87320
+        k3 = 1.48695
+        log_alpha = torch.clamp(self.log_sigma_sqr - 2.0 * torch.log(torch.abs(_wt)+1e-8),
+                                max=8.0,
+                                min=-8.0)
+        return -(k1 * torch.sigmoid(k2 + k3 * log_alpha) - \
+            0.5 * torch.log1p((-log_alpha).exp()) - k1).sum()
+
+def add_loss(module, loss=0):
+    to_loss = getattr(module, "to_loss", None)
+    if callable(to_loss):
+        return loss + to_loss()
+    if hasattr(module, 'children'): 
+        return loss + sum([add_loss(m) for m in module.children()])
+    return loss
+
+
+
+
+
 class CameraBias(torch.nn.Module):
     def __init__(self, size, device):
         super(CameraBias, self).__init__()
@@ -12,8 +59,11 @@ class CameraBias(torch.nn.Module):
         self.bias = - 30.0 * self.bias
         self.bias = torch.tensor(self.bias, requires_grad=True)
 
-    def forward(self, x):
-        return x + self.bias
+    def forward(self, x, interpolate=None):
+        if interpolate is None:
+            return x + self.bias
+        else:
+            return (x * interpolate.reshape(-1,1,1,1)) + self.bias
 
 class VisualNet(torch.nn.Module):
     def __init__(self, state_shape, args, cont_dim=None, disc_dims=None, variational=False):
