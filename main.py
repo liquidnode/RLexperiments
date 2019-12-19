@@ -98,9 +98,12 @@ def main():
 
     #apply modifier workers
     if 'needs_future_reward_and_time_left' in need_dict and need_dict['needs_future_reward_and_time_left']:
-        actor_traj = FutureRewardTimeLeftModifier(data_description, actor_traj.traj_pipe[0])
+        needs_only_reward_density=False
+        if 'needs_only_reward_density' in need_dict:
+            needs_only_reward_density = need_dict['needs_only_reward_density']
+        actor_traj = FutureRewardTimeLeftModifier(data_description, actor_traj.traj_pipe[0], just_density=needs_only_reward_density)
         data_description = actor_traj.data_description
-        expert_traj = [FutureRewardTimeLeftModifier(data_description, expert_traj[n].traj_pipe[0]) 
+        expert_traj = [FutureRewardTimeLeftModifier(data_description, expert_traj[n].traj_pipe[0], just_density=needs_only_reward_density) 
                        for n in range(len(expert_traj))]
 
     assert len(actor_traj.traj_pipe) == args.num_replay_workers
