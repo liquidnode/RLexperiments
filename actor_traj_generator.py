@@ -38,7 +38,7 @@ class ActorTrajGenerator(TrajectoryGenerator):
     def __init__(self, args, copy_queue=None, add_queues=0, add_args=None):
         super().__init__(args, copy_queue)
         TrajectoryGenerator.write_pipe(self.comm_pipe, add_args)
-        if args.needs_embedding:
+        if args.needs_embedding or args.needs_add_data:
             self.add_desc = TrajectoryGenerator.read_pipe(self.traj_pipe[0])
         else:
             self.add_desc = {}
@@ -61,8 +61,7 @@ class ActorTrajGenerator(TrajectoryGenerator):
                 desc[a] = {'compression': False, 'shape': [], 'dtype': np.int32}
             else:
                 desc[a] = {'compression': False, 'shape': list(self.num_actions[a].shape), 'dtype': np.float32}
-        if self.args.needs_embedding:
-            desc.update(self.add_desc)
+        desc.update(self.add_desc)
         return desc
 
     @staticmethod
@@ -183,8 +182,10 @@ class ActorTrajGenerator(TrajectoryGenerator):
             if add_args is None:
                 actor = AgentClass(state_shape, aspace, args)
             else:
+                if args.act_on_cpu:
+                    add_args.append(False)
                 actor = AgentClass(state_shape, aspace, args, *add_args)
-            if args.needs_embedding:
+            if args.needs_embedding or args.needs_add_data:
                 try:
                     add_desc = actor.embed_desc()
                     TrajectoryGenerator.write_pipe(traj_pipe[0], add_desc)
@@ -212,9 +213,8 @@ class ActorTrajGenerator(TrajectoryGenerator):
                     batch[name] = np.zeros([packet_size], dtype=np.int32)
                 else:
                     batch[name] = np.zeros([packet_size]+list(aspace[name].shape), dtype=np.float32)
-            if args.needs_embedding:
-                for a in add_desc:
-                    batch[a] = np.zeros([packet_size]+add_desc[a]['shape'], dtype=add_desc[a]['dtype'])
+            for a in add_desc:
+                batch[a] = np.zeros([packet_size]+add_desc[a]['shape'], dtype=add_desc[a]['dtype'])
                 
             if record_episode:
                 assert args.minerl
@@ -266,9 +266,6 @@ class ActorTrajGenerator(TrajectoryGenerator):
                             except:
                                 pass
                             else:
-                                if torch.cuda.is_available():
-                                    for p in new_state_dict:
-                                        new_state_dict[p] = new_state_dict[p].cuda()
                                 actor.load_state_dict(new_state_dict)
                                 print("copied actor")
 

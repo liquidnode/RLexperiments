@@ -1,6 +1,8 @@
 import torch
 import numpy as np
 
+GAMMA = 0.99
+
 def swish(x):
     return x * torch.sigmoid(x)
 
@@ -18,13 +20,13 @@ class Flatten(torch.nn.Module):
     def forward(self, x):
         return x.view(x.size()[0], -1)
 
-def _variable(inp, ignore_type=False, half=False):
+def _variable(inp, ignore_type=False, half=False, cuda=True):
     if torch.is_tensor(inp):
         rs = inp
     else:
         rs = torch.from_numpy(np.asarray(inp))
 
-    if torch.cuda.is_available():
+    if torch.cuda.is_available() and cuda:
         rs = rs.cuda()
 
     if not ignore_type:
@@ -36,13 +38,13 @@ def _variable(inp, ignore_type=False, half=False):
 
     return rs
 
-def variable(inp, ignore_type=False, half=False):
+def variable(inp, ignore_type=False, half=False, cuda=True):
     if isinstance(inp, dict):
         for k in inp:
-            inp[k] = _variable(inp[k], ignore_type, half)
+            inp[k] = _variable(inp[k], ignore_type, half, cuda)
         return inp
     else:
-        return _variable(inp, ignore_type, half)
+        return _variable(inp, ignore_type, half, cuda)
         
 def sample_gaussian(mu, log_var):
     std = torch.exp(0.5 * log_var)

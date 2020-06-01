@@ -12,6 +12,7 @@ import copy
 from collections import OrderedDict
 from all_experiments import own_data
 from random import shuffle
+from utils import GAMMA
 
 # Import additional environments if available
 try:
@@ -38,7 +39,7 @@ class ExpertGenerator(TrajectoryGenerator):
         assert args.minerl #expert trajectories only for minerl enviroment
         super().__init__(args, copy_queue)
         TrajectoryGenerator.write_pipe(self.comm_pipe, add_args)
-        if args.needs_embedding:
+        if args.needs_embedding or args.needs_add_data:
             self.add_desc = TrajectoryGenerator.read_pipe(self.traj_pipe[0])
         else:
             self.add_desc = {}
@@ -61,8 +62,7 @@ class ExpertGenerator(TrajectoryGenerator):
                 desc[a] = {'compression': False, 'shape': [], 'dtype': np.int32}
             else:
                 desc[a] = {'compression': False, 'shape': list(self.num_actions[a].shape), 'dtype': np.float32}
-        if self.args.needs_embedding:
-            desc.update(self.add_desc)
+        desc.update(self.add_desc)
         return desc
 
     @staticmethod
@@ -171,21 +171,32 @@ class ExpertGenerator(TrajectoryGenerator):
             TrajectoryGenerator.write_pipe(traj_pipe[0], aspace)
 
             add_args = TrajectoryGenerator.read_pipe(comm_pipe)
-            if args.needs_embedding:
+            needs_discount_value = False
+            needs_embed = False
+            if args.needs_embedding or args.needs_add_data:
                 AgentClass = getattr(importlib.import_module(args.agent_from), args.agent_name)
                 if add_args is None:
                     actor = AgentClass(state_shape, aspace, args)
                 else:
+                    if args.act_on_cpu:
+                        add_args.append(True)
                     add_args.append(True)
                     actor = AgentClass(state_shape, aspace, args, *add_args)
                 try:
                     add_desc = actor.embed_desc()
                     TrajectoryGenerator.write_pipe(traj_pipe[0], add_desc)
+                    if 'value' in add_desc:
+                        needs_discount_value = True
+                    if 'pov_embed' in add_desc:
+                        needs_embed = True
                 except:
                     assert False #embed_desc not implemented
                 if args.load is not None:
                     actor.loadstore(args.load)
                 actor._model['modules'] = actor._model['modules'].train(False)
+                if not needs_embed:
+                    del actor
+                    actor = None
 
             traj_index = 0
             pipe_number = 0
@@ -258,7 +269,16 @@ class ExpertGenerator(TrajectoryGenerator):
                     reward_l[i] = data_frames[i][2]
                     done_l[i] = data_frames[i][-1]
 
-
+                if needs_discount_value:
+                    value = 0.0
+                    value_l = np.zeros([len(data_frames)], dtype=np.float32)
+                    for j in range(len(data_frames)):
+                        i = len(data_frames) - 1 - j
+                        if j == 0:
+                            value = reward_l[i]
+                        else:
+                            value = reward_l[i] + GAMMA * value
+                        value_l[i] = value
 
                 #slice and pack into shared memory buffers
                 i = 0
@@ -266,12 +286,15 @@ class ExpertGenerator(TrajectoryGenerator):
                     current_packet_size = min(packet_size, reward_l.shape[0] - i)
                     reward_sh = make_shared_buffer(reward_l[i:(i+current_packet_size)])
                     done_sh = make_shared_buffer(done_l[i:(i+current_packet_size)])
-                    
+
                     #send packet
                     packet = {'reward': reward_sh,
                               'done': done_sh}
-
-                    if args.needs_embedding:
+                    
+                    if needs_discount_value:
+                        value_sh = make_shared_buffer(value_l[i:(i+current_packet_size)])
+                        packet.update({'value': value_sh})
+                    if args.needs_embedding and needs_embed:
                         if copy_queue is not None:
                             if not copy_queue.empty():
                                 try:
@@ -279,11 +302,14 @@ class ExpertGenerator(TrajectoryGenerator):
                                 except:
                                     pass
                                 else:
-                                    if torch.cuda.is_available():
-                                        for p in new_state_dict:
-                                            new_state_dict[p] = new_state_dict[p].cuda()
                                     actor.load_state_dict(new_state_dict)
                                     print("copied actor in expert TrajectoryGenerator")
+                        #try:
+                        #    obs_packet = {}
+                        #    for a in obs_l:
+                        #        obs_packet[a] = obs_l[a][i:(i+current_packet_size)]
+                        #    packet.update(actor.generate_embed_full_state(obs_packet))
+                        #except:
                         packet.update(actor.generate_embed(obs_l['pov'][i:(i+current_packet_size)]))
 
                     for o in obs_l:

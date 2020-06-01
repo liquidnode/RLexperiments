@@ -2,6 +2,27 @@ import numpy
 import random
 import numpy as np
 import torch
+from utils import one_hot
+from torch.nn import functional as F
+
+class WeightedMSETargetLoss(torch.nn.Module):
+    def __init__(self):
+        super(WeightedMSETargetLoss, self).__init__()
+        self.mse = torch.nn.MSELoss(reduction='none')
+
+    def forward(self, x, target, weight=None):
+        x = F.softmax(x-x.logsumexp(dim=-1, keepdim=True), -1)
+        p_target = one_hot(target, x.shape[-1], x.device)
+        if weight is None:
+            p_target = 0.05 * p_target + 0.95 * x.detach()
+            return torch.mean(self.mse(x, p_target))
+        else:
+            weight = weight.unsqueeze(-1).expand(x.shape)
+            mask = torch.where(weight>=0.0,  torch.ones_like(p_target), p_target)
+            p_target = torch.where(weight>=0.0, 0.05 * p_target + 0.95 * x.detach(), 0.05 * (1.0 - p_target) + 0.95 * x.detach())
+            weight = torch.where(weight>=0.0,  weight, -10.0*weight)
+            #loss = torch.where(weight>=0.0, weight*self.mse(x, 0.05 * p_target + 0.95 * x.detach()), -weight * p_target * x)
+            return torch.mean(weight*mask*self.mse(x, p_target))
 
 class WeightedCELoss(torch.nn.Module):
     def __init__(self):

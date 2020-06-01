@@ -3,12 +3,11 @@ import numpy as np
 from all_experiments import HashingMemory, RAdam, prio_utils
 from torch.nn import functional as F
 from collections import OrderedDict
-from utils import variable, Lambda, swish, Flatten, sample_gaussian, one_hot
+from utils import variable, Lambda, swish, Flatten, sample_gaussian, one_hot, GAMMA
 import copy
 import math
 from modules import VisualNet, MemoryModel, CameraBias
 
-GAMMA = 0.99
 INFODIM = False
 
 
@@ -67,6 +66,9 @@ class UpsideDownModel():
                 state_dict = {n: v for n, v in s.items() if n.startswith('pov_embed.')}
             else:
                 state_dict = s
+        if torch.cuda.is_available():
+            for p in state_dict:
+                state_dict[p] = state_dict[p].cuda()
         self._model['modules'].load_state_dict(state_dict, strict)
 
     def loadstore(self, filename, load=True):

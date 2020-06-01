@@ -1,7 +1,7 @@
 # RLexperiments
-This project contains various reinforcement/imitation learning experiments, such as implementations of Implicit Quantile Networks \[1\], Neural Episodic Control \[2\], FeUdal Networks \[3\], Bootstrapped Dual Policy Iteration \[4\], Prioritized Experience Replay \[5\], TD3 \[6\]. Most of them are applied to the MineRL enviroment package. The two latest experiments, an off-policy multiaction actor-critic agent and an Upside Down RL agent \[7, 8\], are featured in the root directory of this repository. One resulting multiaction agent can be seen here https://www.youtube.com/watch?v=oyNKCeMywtY. The other experiments can be found in the all_experiments/ directory.
+This project contains various reinforcement/imitation learning experiments, such as implementations of Implicit Quantile Networks \[1\], Neural Episodic Control \[2\], FeUdal Networks \[3\], Bootstrapped Dual Policy Iteration \[4\], Prioritized Experience Replay \[5\], TD3 \[6\], MuZero \[7\]. Most of them are applied to the MineRL enviroment package. The two latest experiments, an off-policy multiaction actor-critic agent and an Upside Down RL agent \[8, 9\], are featured in the root directory of this repository. One resulting multiaction agent can be seen here https://www.youtube.com/watch?v=oyNKCeMywtY. The other experiments can be found in the all_experiments/ directory.
 
-This project also features an easily extendable multi-processing system of producer/consumer workers (trajectory generator, replay buffer and trainer workers).
+This project also features an easily expandable multi-processing system of producer/consumer workers (trajectory generator, replay buffer and trainer workers).
 
 This repository contains modified and unmodified code from:
 - https://github.com/facebookresearch/XLM (lightly modified HashingMemory module)
@@ -30,6 +30,8 @@ References:
 
 \[6\] S. Fujimoto et al. Addressing Function Approximation Error in Actor-Critic Methods. International Conference on Machine Learning. 2018.
 
-\[7\] R. K. Srivastava et al. Training Agents using Upside-Down Reinforcement Learning. arXiv preprint arXiv:1912.02877, 2019.
+\[7\] J. Schrittwieser et al. Mastering atari, go, chess and shogi by planning with a learned model. arXiv preprint arXiv:1911.08265, 2019.
 
-\[8\] J. Schmidhuber. Reinforcement Learning Upside Down: Don't Predict Rewards--Just Map Them to Actions. arXiv preprint arXiv:1912.02875, 2019.
+\[8\] R. K. Srivastava et al. Training Agents using Upside-Down Reinforcement Learning. arXiv preprint arXiv:1912.02877, 2019.
+
+\[9\] J. Schmidhuber. Reinforcement Learning Upside Down: Don't Predict Rewards--Just Map Them to Actions. arXiv preprint arXiv:1912.02875, 2019.
